@@ -1,0 +1,8 @@
+<devGroup group="CCDs">
+        <device label="Point Grey FireFly MV">
+                <driver name="FFMV">indi_ffmv_ccd</driver>
+                <version>0.1</version>
+        </device>
+</devGroup>
+
+
