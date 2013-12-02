@@ -565,7 +565,7 @@ void FFMVCCD::grabImage()
    int height = PrimaryCCD.getSubH() / PrimaryCCD.getBinY();
    IDMessage(getDeviceName(), "height: %d, width: %d", height, width);
 
-   memset(image, 0, width * height * PrimaryCCD.GetBPP());
+   //memset(image, 0, width * height * PrimaryCCD.getBPP());
 
    // Retrieve an image
    error = m_cam.RetrieveBuffer(&raw_image);
@@ -599,8 +599,8 @@ void FFMVCCD::grabImage()
    // Fill buffer with random pattern
    for (int i=0; i < height ; i++) {
        for (int j=0; j < width; j++) {
-           //((uint16_t *) image)[i*width+j] = *(raw_image(i, j));
-           ((uint16_t *) image)[i*width+j] += *(raw_image(i, j));
+           ((uint16_t *) image)[i*width+j] = *(raw_image(i, j));
+           //((uint16_t *) image)[i*width+j] += *(raw_image(i, j));
        }
    }
 
