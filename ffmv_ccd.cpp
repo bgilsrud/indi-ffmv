@@ -27,12 +27,6 @@
 #include "ffmv_ccd.h"
 
 const int POLLMS           = 500;       /* Polling interval 500 ms */
-const int MAX_CCD_TEMP     = 45;		/* Max CCD temperature */
-const int MIN_CCD_TEMP	   = -55;		/* Min CCD temperature */
-const float TEMP_THRESHOLD = .25;		/* Differential temperature threshold (C)*/
-
-/* Macro shortcut to CCD temperature value */
-#define currentCCDTemperature   TemperatureN[0].value
 
 std::auto_ptr<FFMVCCD> ffmvCCD(0);
 
@@ -203,10 +197,6 @@ bool FFMVCCD::initProperties()
     // Must init parent properties first!
     INDI::CCD::initProperties();
 
-    // We init the property details. This is a stanard property of the INDI Library.
-    IUFillNumber(&TemperatureN[0], "CCD_TEMPERATURE_VALUE", "Temperature (C)", "%5.2f", MIN_CCD_TEMP, MAX_CCD_TEMP, 0., 0.);
-    IUFillNumberVector(&TemperatureNP, TemperatureN, 1, getDeviceName(), "CCD_TEMPERATURE", "Temperature", MAIN_CONTROL_TAB, IP_RW, 60, IPS_IDLE);
-
     // Add Debug, Simulator, and Configuration controls
     addAuxControls();
 
@@ -221,13 +211,6 @@ void FFMVCCD::ISGetProperties(const char *dev)
 {
     INDI::CCD::ISGetProperties(dev);
 
-    // If we are _already_ connected, let's define our temperature property to the client now
-    if (isConnected())
-    {
-        // Define our only property temperature
-        defineNumber(&TemperatureNP);
-    }
-
 }
 
 /********************************************************************************************
@@ -241,19 +224,12 @@ bool FFMVCCD::updateProperties()
 
     if (isConnected())
     {
-        // Define our only property temperature
-        defineNumber(&TemperatureNP);
 
         // Let's get parameters now from CCD
         setupParams();
 
         // Start the timer
         SetTimer(POLLMS);
-    }
-    else
-    // We're disconnected
-    {
-        deleteProperty(TemperatureNP.name);
     }
 
     return true;
@@ -294,27 +270,36 @@ int FFMVCCD::StartExposure(float duration)
     prop.onOff = true;
     prop.autoManualMode = false;
     prop.absControl = true;
-    float correctFrameRate = (float)(1.0 / (duration));
-    if (correctFrameRate < prop_info.absMin)
-    {
-            double nbStackWanted = ceil(duration / prop_info.absMin);
-            correctFrameRate = (float)(nbStackWanted / duration);
+    prop.absValue = prop_info.absMin;
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to set framerate: %s", error.GetDescription());
+        return -1;
     }
 
-    if (correctFrameRate > prop_info.absMax)
-    {
-            correctFrameRate = prop_info.absMax;
+    //Enable extended shutter times
+    error = m_cam.ReadRegister(0x83C, &val);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to read FRAME_RATE register: %s", error.GetDescription());
+        return -1;
     }
-
-    prop.absValue = correctFrameRate;
-    m_cam.SetProperty(&prop);
+    val &= ~(1 << 6);
+    error = m_cam.WriteRegister(0x83C, val);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to write FRAME_RATE register: %s", error.GetDescription());
+        return -1;
+    }
 
     // Turn off AutoExposure
     prop.type = FlyCapture2::AUTO_EXPOSURE;
     prop.onOff = false;
     prop.autoManualMode = false;
     prop.absControl = false;
-    m_cam.SetProperty(&prop);
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to disable autoexposure: %s", error.GetDescription());
+        return -1;
+    }
 
     // Set gain to high level
     prop_info.type = FlyCapture2::GAIN;
@@ -325,7 +310,11 @@ int FFMVCCD::StartExposure(float duration)
     prop.autoManualMode = false;
     prop.absControl = true;
     prop.absValue = current;
-    m_cam.SetProperty(&prop);
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to set gain: %s", error.GetDescription());
+        return -1;
+    }
 
     // set brightness
     prop_info.type = FlyCapture2::BRIGHTNESS;
@@ -335,7 +324,12 @@ int FFMVCCD::StartExposure(float duration)
     prop.autoManualMode = false;
     prop.absControl = false;
     prop.valueA = (0.55 * (prop_info.max - prop_info.min) + prop_info.min);
-    m_cam.SetProperty(&prop);
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to set brightness: %s", error.GetDescription());
+        return -1;
+    }
+ 
 
 #if 0
     m_cam.ReadRegister(0x1048, &val);
@@ -349,7 +343,11 @@ int FFMVCCD::StartExposure(float duration)
     prop.autoManualMode = false;
     prop.absControl = false;
     prop.valueA = 0;
-    m_cam.SetProperty(&prop);
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to disable Gamma correction: %s", error.GetDescription());
+        return -1;
+    }
 
     prop.type = FlyCapture2::SHUTTER;
     prop_info.type = FlyCapture2::SHUTTER;
@@ -359,10 +357,12 @@ int FFMVCCD::StartExposure(float duration)
     prop.autoManualMode = false;
     prop.absControl = true;
     prop.absValue = absShutter;
-    m_cam.SetProperty(&prop);
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to set exposure length: %s", error.GetDescription());
+        return -1;
+    }
 
-
- 
 
     // Start capturing images
     if (!capturing) {
@@ -426,35 +426,6 @@ bool FFMVCCD::ISNewNumber(const char *dev, const char *name, double values[], ch
     if(strcmp(dev,getDeviceName())==0)
     {
 
-        /* Temperature*/
-        if (!strcmp(TemperatureNP.name, name))
-        {
-            TemperatureNP.s = IPS_IDLE;
-
-            // Let's find the temperature value
-            np = IUFindNumber(&TemperatureNP, names[0]);
-
-            // If it doesn't exist...
-            if (np == NULL)
-            {
-                IDSetNumber(&TemperatureNP, "Unknown error. %s is not a member of %s property.", names[0], name);
-                return false;
-            }
-
-            // If it's out of range ...
-            if (values[0] < MIN_CCD_TEMP || values[0] > MAX_CCD_TEMP)
-            {
-                IDSetNumber(&TemperatureNP, "Error: valid range of temperature is from %d to %d", MIN_CCD_TEMP, MAX_CCD_TEMP);
-                return false;
-            }
-
-            // All OK, let's set the requested temperature
-            TemperatureRequest = values[0];
-            TemperatureNP.s = IPS_BUSY;
-
-            IDSetNumber(&TemperatureNP, "Setting CCD temperature to %+06.2f C", values[0]);
-            return true;
-        }
     }
 
     // If we didn't process anything above, let the parent handle it.
@@ -469,15 +440,10 @@ void FFMVCCD::addFITSKeywords(fitsfile *fptr, CCDChip *targetChip)
     // Let's first add parent keywords
     INDI::CCD::addFITSKeywords(fptr, targetChip);
 
-    // Add temperature to FITS header
-    int status=0;
-    fits_update_key_s(fptr, TDOUBLE, "CCD-TEMP", &(TemperatureN[0].value), "CCD Temperature (Celcius)", &status);
-    fits_write_date(fptr, &status);
-
 }
 
 /**************************************************************************************
-** Main device loop. We check for exposure and temperature progress here
+** Main device loop. We check for exposure progress
 ***************************************************************************************/
 void FFMVCCD::TimerHit()
 {
@@ -513,36 +479,6 @@ void FFMVCCD::TimerHit()
 
     }
 
-    switch (TemperatureNP.s)
-    {
-      case IPS_IDLE:
-      case IPS_OK:
-        break;
-
-      case IPS_BUSY:
-        /* If target temperature is higher, then increase current CCD temperature */
-        if (currentCCDTemperature < TemperatureRequest)
-           currentCCDTemperature++;
-        /* If target temperature is lower, then decrese current CCD temperature */
-        else if (currentCCDTemperature > TemperatureRequest)
-          currentCCDTemperature--;
-        /* If they're equal, stop updating */
-        else
-        {
-          TemperatureNP.s = IPS_OK;
-          IDSetNumber(&TemperatureNP, "Target temperature reached.");
-
-          break;
-        }
-
-        IDSetNumber(&TemperatureNP, NULL);
-
-        break;
-
-      case IPS_ALERT:
-        break;
-    }
-
     SetTimer(POLLMS);
     return;
 }
@@ -563,7 +499,6 @@ void FFMVCCD::grabImage()
    // Get width and height
    int width = PrimaryCCD.getSubW() / PrimaryCCD.getBinX();
    int height = PrimaryCCD.getSubH() / PrimaryCCD.getBinY();
-   IDMessage(getDeviceName(), "height: %d, width: %d", height, width);
 
    //memset(image, 0, width * height * PrimaryCCD.getBPP());
 
@@ -576,7 +511,6 @@ void FFMVCCD::grabImage()
         return;
    }
 
-   IDMessage(getDeviceName(), "From FFMV height: %d, width: %d", raw_image.GetRows(), raw_image.GetCols());
 #if 0
    // Convert the raw image
    error = raw_image.Convert(FlyCapture2::PIXEL_FORMAT_MONO16, &converted_image);
@@ -590,11 +524,6 @@ void FFMVCCD::grabImage()
 
 
 
-   IDMessage(getDeviceName(), "Bits/pixel: %u", raw_image.GetBitsPerPixel());
-   IDMessage(getDeviceName(), "Cols: %u", raw_image.GetCols());
-   IDMessage(getDeviceName(), "Rows: %u", raw_image.GetRows());
-   IDMessage(getDeviceName(), "Stride: %u", raw_image.GetStride());
-   IDMessage(getDeviceName(), "Data Size: %u", raw_image.GetDataSize());
    myimage = raw_image.GetData();
    // Fill buffer with random pattern
    for (int i=0; i < height ; i++) {
