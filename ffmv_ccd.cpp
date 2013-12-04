@@ -229,7 +229,7 @@ bool FFMVCCD::updateProperties()
         setupParams();
 
         // Start the timer
-        SetTimer(POLLMS);
+        //SetTimer(POLLMS);
     }
 
     return true;
@@ -257,6 +257,8 @@ int FFMVCCD::StartExposure(float duration)
     FlyCapture2::Error error;
     FlyCapture2::Property prop(FlyCapture2::AUTO_EXPOSURE);
     FlyCapture2::PropertyInfo prop_info;
+    FlyCapture2::Image raw_image;
+    int i;
     int ms;
     unsigned int val;
     float gain = 1.0;
@@ -331,11 +333,9 @@ int FFMVCCD::StartExposure(float duration)
     }
  
 
-#if 0
     m_cam.ReadRegister(0x1048, &val);
     val &= 0xfffffffe;
     m_cam.WriteRegister(0x1048, val);
-    #endif
 
     // Disable Gamma correction
     prop.type = FlyCapture2::GAMMA;
@@ -352,7 +352,8 @@ int FFMVCCD::StartExposure(float duration)
     prop.type = FlyCapture2::SHUTTER;
     prop_info.type = FlyCapture2::SHUTTER;
     m_cam.GetPropertyInfo(&prop_info);
-    float absShutter = (float) (1000 * duration < prop_info.absMax ? 1000 * duration : prop_info.absMax);
+    sub_count = (1000 * duration / prop_info.absMax);
+    float absShutter = (1000 * duration / (sub_count + 1));
     prop.onOff = true;
     prop.autoManualMode = false;
     prop.absControl = true;
@@ -362,6 +363,8 @@ int FFMVCCD::StartExposure(float duration)
         IDMessage(getDeviceName(), "Failed to set exposure length: %s", error.GetDescription());
         return -1;
     }
+
+    IDMessage(getDeviceName(), "Doing %d sub exposures at %f seconds each", sub_count, absShutter);
 
 
     // Start capturing images
@@ -386,8 +389,49 @@ int FFMVCCD::StartExposure(float duration)
     InExposure=true;
     IDMessage(getDeviceName(), "Exposure has begun.");
 
+   // Let's get a pointer to the frame buffer
+   char * image = PrimaryCCD.getFrameBuffer();
+
+   // Get width and height
+   int width = PrimaryCCD.getSubW() / PrimaryCCD.getBinX();
+   int height = PrimaryCCD.getSubH() / PrimaryCCD.getBinY();
+
+   memset(image, 0, PrimaryCCD.getFrameBufferSize());
+
+
+   do {
+           // Retrieve an image
+           error = m_cam.RetrieveBuffer(&raw_image);
+           if (error != FlyCapture2::PGRERROR_OK)
+           {
+                   IDMessage(getDeviceName(), "Could not convert image: %s", error.GetDescription());
+                   return 1;
+           }
+
+           int min = (1 << 16) - 1;
+           int max = 0;
+           //myimage = raw_image.GetData();
+           // Fill buffer with random pattern
+           for (int i=0; i < height ; i++) {
+                   for (int j=0; j < width; j++) {
+                           //((uint16_t *) image)[i*width+j] = *(raw_image(i, j));
+                           ((uint16_t *) image)[i*width+j] += *((uint16_t*) (raw_image(i, j))) >> 6;
+                           val = ((uint16_t *) image)[i*width+j];
+                           if (val < min) {
+                                min = val;
+                           }
+                           if (val > max) {
+                                max = val;
+                           }
+                   }
+           }
+                   IDMessage(getDeviceName(), "Max: 0x%x, min: 0x%x", max, min);
+
+   } while (sub_count--);
+
+    ExposureComplete(&PrimaryCCD);
     // We're done
-    return 0;
+    return 1;
 }
 
 /**************************************************************************************
@@ -500,7 +544,7 @@ void FFMVCCD::grabImage()
    int width = PrimaryCCD.getSubW() / PrimaryCCD.getBinX();
    int height = PrimaryCCD.getSubH() / PrimaryCCD.getBinY();
 
-   //memset(image, 0, width * height * PrimaryCCD.getBPP());
+   memset(image, 0, PrimaryCCD.getFrameBufferSize());
 
    // Retrieve an image
    error = m_cam.RetrieveBuffer(&raw_image);
@@ -511,25 +555,12 @@ void FFMVCCD::grabImage()
         return;
    }
 
-#if 0
-   // Convert the raw image
-   error = raw_image.Convert(FlyCapture2::PIXEL_FORMAT_MONO16, &converted_image);
-   if (error != FlyCapture2::PGRERROR_OK)
-   {
-       error.PrintErrorTrace();
-       IDMessage(getDeviceName(), "Could not convert image");
-       return;
-   } 
-   #endif
-
-
-
    myimage = raw_image.GetData();
    // Fill buffer with random pattern
    for (int i=0; i < height ; i++) {
        for (int j=0; j < width; j++) {
-           ((uint16_t *) image)[i*width+j] = *(raw_image(i, j));
-           //((uint16_t *) image)[i*width+j] += *(raw_image(i, j));
+           //((uint16_t *) image)[i*width+j] = *(raw_image(i, j));
+           ((uint16_t *) image)[i*width+j] += *((uint16_t*) (raw_image(i, j)));
        }
    }
 

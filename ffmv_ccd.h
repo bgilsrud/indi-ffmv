@@ -58,6 +58,7 @@ private:
     bool capturing;
     // Struct to keep timing
     struct timeval ExpStart;
+    int sub_count;
 
     float ExposureRequest;
     float TemperatureRequest;
