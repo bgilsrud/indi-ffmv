@@ -28,8 +28,59 @@
 
 const int POLLMS           = 500;       /* Polling interval 500 ms */
 
+typedef union {
+    uint32_t raw_val;
+    float fval;
+} abs_csr;
+
 std::auto_ptr<FFMVCCD> ffmvCCD(0);
 
+/**
+ * FlyCapture doesn't provide an API to write to registers in the MT9V022 chip.
+ * This can be done by programming the address in 0x1A00 and writing to 0x1A00.
+ */
+FlyCapture2::Error FFMVCCD::writeMicronReg(unsigned int offset, unsigned int val)
+{
+        FlyCapture2::Error error;
+        unsigned int rd;
+
+        error = m_cam.WriteRegister(0x1A00, offset);
+        if (error != FlyCapture2::PGRERROR_OK) {
+                return error;
+        }
+
+        error = m_cam.ReadRegister(0x1A04, &rd);
+        if (error != FlyCapture2::PGRERROR_OK) {
+                return error;
+        }
+        IDMessage(getDeviceName(), "Micro reg 0x%x before: 0x%x", offset, rd);
+
+        error = m_cam.WriteRegister(0x1A04, val);
+
+        error = m_cam.ReadRegister(0x1A04, &rd);
+        if (error != FlyCapture2::PGRERROR_OK) {
+                return error;
+        }
+        IDMessage(getDeviceName(), "Micro reg 0x%x after: 0x%x", offset, rd);
+        return error;
+}
+
+FlyCapture2::Error FFMVCCD::readMicronReg(unsigned int offset, unsigned int *val)
+{
+        FlyCapture2::Error error;
+
+        error = m_cam.WriteRegister(0x1A00, offset);
+        if (error != FlyCapture2::PGRERROR_OK) {
+                return error;
+        }
+
+        error = m_cam.ReadRegister(0x1A04, val);
+        if (error != FlyCapture2::PGRERROR_OK) {
+                return error;
+        }
+
+        return error;
+}
 void ISInit()
 {
     static int isInit =0;
@@ -101,8 +152,11 @@ bool FFMVCCD::Connect()
     FlyCapture2::Format7Info fmt7_info;
     FlyCapture2::Format7ImageSettings fmt7_settings;
     FlyCapture2::Format7PacketInfo fmt7_pkt_info;
+    FlyCapture2::Property prop(FlyCapture2::AUTO_EXPOSURE);
+    FlyCapture2::PropertyInfo prop_info;
     bool supported;
     bool settings_valid;
+    unsigned int val;
 
     error = bus_man.GetCameraFromIndex(0, &guid);
     if (error != FlyCapture2::PGRERROR_OK)
@@ -162,6 +216,47 @@ bool FFMVCCD::Connect()
         return false;
     }
 
+
+    //Vref signal boost
+    //error = writeMicronReg(0x2C, 0x00);
+
+    //Digital gain boost
+    error = m_cam.WriteRegister(0x820, 0x7F);
+
+    //2X gain boost
+    //error = writeMicronReg(0x80, 0xF8);
+
+
+    // set brightness
+    prop_info.type = FlyCapture2::BRIGHTNESS;
+    m_cam.GetPropertyInfo(&prop_info);
+    prop.type = FlyCapture2::BRIGHTNESS;
+    prop.onOff = true;
+    prop.autoManualMode = false;
+    prop.absControl = false;
+    prop.valueA = (0.55 * (prop_info.max - prop_info.min) + prop_info.min);
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to set brightness: %s", error.GetDescription());
+        return -1;
+    }
+ 
+
+    m_cam.ReadRegister(0x1048, &val);
+    val &= 0xfffffffe;
+    m_cam.WriteRegister(0x1048, val);
+
+    // Disable Gamma correction
+    prop.type = FlyCapture2::GAMMA;
+    prop.onOff = true;
+    prop.autoManualMode = false;
+    prop.absControl = false;
+    prop.valueA = 0;
+    error = m_cam.SetProperty(&prop);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to disable Gamma correction: %s", error.GetDescription());
+        return -1;
+    }
     return true;
 }
 
@@ -241,7 +336,7 @@ bool FFMVCCD::updateProperties()
 void FFMVCCD::setupParams()
 {
     // The FireFly MV has a Micron MT9V022 CMOS sensor
-    SetCCDParams(752, 480, 16, 6.0, 6.0);
+    SetCCDParams(640, 480, 16, 6.0, 6.0);
 
     // Let's calculate how much memory we need for the primary CCD buffer
     int nbuf;
@@ -258,37 +353,32 @@ int FFMVCCD::StartExposure(float duration)
     FlyCapture2::Property prop(FlyCapture2::AUTO_EXPOSURE);
     FlyCapture2::PropertyInfo prop_info;
     FlyCapture2::Image raw_image;
+    FlyCapture2::FrameRate fr;
     int i;
     int ms;
     unsigned int val;
     float gain = 1.0;
+    abs_csr csr;
 
     ms = duration* 1000;
 
     // Set framerate
     prop_info.type = FlyCapture2::FRAME_RATE;
-    m_cam.GetPropertyInfo(&prop_info);
+    error = m_cam.GetPropertyInfo(&prop_info);
+    if (error != FlyCapture2::PGRERROR_OK) {
+        IDMessage(getDeviceName(), "Failed to get framerate info: %s", error.GetDescription());
+        return -1;
+    }
     prop.type = FlyCapture2::FRAME_RATE;
     prop.onOff = true;
     prop.autoManualMode = false;
     prop.absControl = true;
     prop.absValue = prop_info.absMin;
+    
     error = m_cam.SetProperty(&prop);
+    IDMessage(getDeviceName(), "Setting frame rate to %f %s (raw 0x%x). Min is %f max is %f", prop.absValue, prop_info.pUnits, prop.absValue,prop_info.absMin, prop_info.absMax);
     if (error != FlyCapture2::PGRERROR_OK) {
         IDMessage(getDeviceName(), "Failed to set framerate: %s", error.GetDescription());
-        return -1;
-    }
-
-    //Enable extended shutter times
-    error = m_cam.ReadRegister(0x83C, &val);
-    if (error != FlyCapture2::PGRERROR_OK) {
-        IDMessage(getDeviceName(), "Failed to read FRAME_RATE register: %s", error.GetDescription());
-        return -1;
-    }
-    val &= ~(1 << 6);
-    error = m_cam.WriteRegister(0x83C, val);
-    if (error != FlyCapture2::PGRERROR_OK) {
-        IDMessage(getDeviceName(), "Failed to write FRAME_RATE register: %s", error.GetDescription());
         return -1;
     }
 
@@ -303,68 +393,24 @@ int FFMVCCD::StartExposure(float duration)
         return -1;
     }
 
-    // Set gain to high level
-    prop_info.type = FlyCapture2::GAIN;
-    m_cam.GetPropertyInfo(&prop_info);
-    float current = gain * (prop_info.absMax - prop_info.absMin) + prop_info.absMin;
-    prop.type = FlyCapture2::GAIN;
-    prop.onOff = true;
-    prop.autoManualMode = false;
-    prop.absControl = true;
-    prop.absValue = current;
-    error = m_cam.SetProperty(&prop);
-    if (error != FlyCapture2::PGRERROR_OK) {
-        IDMessage(getDeviceName(), "Failed to set gain: %s", error.GetDescription());
-        return -1;
-    }
-
-    // set brightness
-    prop_info.type = FlyCapture2::BRIGHTNESS;
-    m_cam.GetPropertyInfo(&prop_info);
-    prop.type = FlyCapture2::BRIGHTNESS;
-    prop.onOff = true;
-    prop.autoManualMode = false;
-    prop.absControl = false;
-    prop.valueA = (0.55 * (prop_info.max - prop_info.min) + prop_info.min);
-    error = m_cam.SetProperty(&prop);
-    if (error != FlyCapture2::PGRERROR_OK) {
-        IDMessage(getDeviceName(), "Failed to set brightness: %s", error.GetDescription());
-        return -1;
-    }
- 
-
-    m_cam.ReadRegister(0x1048, &val);
-    val &= 0xfffffffe;
-    m_cam.WriteRegister(0x1048, val);
-
-    // Disable Gamma correction
-    prop.type = FlyCapture2::GAMMA;
-    prop.onOff = true;
-    prop.autoManualMode = false;
-    prop.absControl = false;
-    prop.valueA = 0;
-    error = m_cam.SetProperty(&prop);
-    if (error != FlyCapture2::PGRERROR_OK) {
-        IDMessage(getDeviceName(), "Failed to disable Gamma correction: %s", error.GetDescription());
-        return -1;
-    }
-
     prop.type = FlyCapture2::SHUTTER;
     prop_info.type = FlyCapture2::SHUTTER;
     m_cam.GetPropertyInfo(&prop_info);
-    sub_count = (1000 * duration / prop_info.absMax);
-    float absShutter = (1000 * duration / (sub_count + 1));
+    sub_count = ceil (duration / (prop_info.absMax / 1000.0));
+    float absShutter = (1000 * duration / (sub_count));
     prop.onOff = true;
     prop.autoManualMode = false;
     prop.absControl = true;
     prop.absValue = absShutter;
+    IDMessage(getDeviceName(), "Shutter min: %f %s", prop_info.absMin, prop_info.pUnits);
+    IDMessage(getDeviceName(), "Shutter max: %f %s", prop_info.absMax, prop_info.pUnits);
     error = m_cam.SetProperty(&prop);
     if (error != FlyCapture2::PGRERROR_OK) {
         IDMessage(getDeviceName(), "Failed to set exposure length: %s", error.GetDescription());
         return -1;
     }
 
-    IDMessage(getDeviceName(), "Doing %d sub exposures at %f seconds each", sub_count, absShutter);
+    IDMessage(getDeviceName(), "Doing %d sub exposures at %f %s each", sub_count, absShutter, prop_info.pUnits);
 
 
     // Start capturing images

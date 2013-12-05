@@ -52,6 +52,9 @@ private:
     float CalcTimeLeft();
     void  setupParams();
     void  grabImage();
+    FlyCapture2::Error writeMicronReg(unsigned int offset, unsigned int val);
+    FlyCapture2::Error readMicronReg(unsigned int offset, unsigned int *val);
+
 
     // Are we exposing?
     bool InExposure;
