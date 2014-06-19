@@ -22,6 +22,7 @@
 
 #include <indiccd.h>
 #include <flycapture/FlyCapture2.h>
+#include <dc1394/dc1394.h>
 
 using namespace std;
 
@@ -42,7 +43,7 @@ protected:
     bool updateProperties();
 
     // CCD specific functions
-    int StartExposure(float duration);
+    bool StartExposure(float duration);
     bool AbortExposure();
     void TimerHit();
     void addFITSKeywords(fitsfile *fptr, CCDChip *targetChip);
@@ -61,11 +62,13 @@ private:
     bool capturing;
     // Struct to keep timing
     struct timeval ExpStart;
-    int sub_count;
 
     float ExposureRequest;
     float TemperatureRequest;
     int   timerID;
+    float max_exposure;
+    float last_exposure_length;
+    int sub_count;
 
     // We declare the CCD temperature property
     INumber TemperatureN[1];
@@ -73,6 +76,10 @@ private:
 
     FlyCapture2::Camera m_cam;
 
+    dc1394_t *dc1394;
+    dc1394camera_t *dcam;
+
+    float last_duration;
 };
 
 #endif // FFMVCCD_H
