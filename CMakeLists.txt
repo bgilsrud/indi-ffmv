@@ -32,5 +32,5 @@ target_link_libraries(indi_ffmv_ccd ${INDI_DRIVER_LIBRARIES} ${CFITSIO_LIBRARIES
 install(TARGETS indi_ffmv_ccd RUNTIME DESTINATION bin )
 
 install(FILES indi_ffmv.xml DESTINATION ${INDI_DATA_DIR})
-install(FILES 99-ffmv.rules DESTINATION ${RULES_INSTALL_DIR})
+install(FILES 99-fireflymv.rules DESTINATION ${RULES_INSTALL_DIR})
 

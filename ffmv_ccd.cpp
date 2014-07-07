@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <arpa/inet.h>
 #include <math.h>
+#include <sys/time.h>
 
 #include <indiapi.h>
 #include <iostream>
@@ -29,59 +30,48 @@
 
 const int POLLMS = 250;
 
-typedef union {
-    uint32_t raw_val;
-    float fval;
-} abs_csr;
-
 std::auto_ptr<FFMVCCD> ffmvCCD(0);
 
 /**
  * FlyCapture doesn't provide an API to write to registers in the MT9V022 chip.
- * This can be done by programming the address in 0x1A00 and writing to 0x1A00.
+ * This can be done by programming the address in 0x1A00 and writing to 0x1A04.
  */
-FlyCapture2::Error FFMVCCD::writeMicronReg(unsigned int offset, unsigned int val)
+dc1394error_t FFMVCCD::writeMicronReg(unsigned int offset, unsigned int val)
 {
-        FlyCapture2::Error error;
-        unsigned int rd;
-
-        error = m_cam.WriteRegister(0x1A00, offset);
-        if (error != FlyCapture2::PGRERROR_OK) {
-                return error;
+        dc1394error_t err;
+        err = dc1394_set_control_register(dcam, 0x1A00, offset);
+        if (err != DC1394_SUCCESS) {
+            return err;
         }
 
-        error = m_cam.ReadRegister(0x1A04, &rd);
-        if (error != FlyCapture2::PGRERROR_OK) {
-                return error;
+        err = dc1394_set_control_register(dcam, 0x1A04, val);
+        if (err != DC1394_SUCCESS) {
+            return err;
         }
-        IDMessage(getDeviceName(), "Micro reg 0x%x before: 0x%x", offset, rd);
 
-        error = m_cam.WriteRegister(0x1A04, val);
-
-        error = m_cam.ReadRegister(0x1A04, &rd);
-        if (error != FlyCapture2::PGRERROR_OK) {
-                return error;
-        }
-        IDMessage(getDeviceName(), "Micro reg 0x%x after: 0x%x", offset, rd);
-        return error;
+        return DC1394_SUCCESS;
 }
 
-FlyCapture2::Error FFMVCCD::readMicronReg(unsigned int offset, unsigned int *val)
+/**
+ * Read a register from the MT9V022 sensor.
+ * This writes the MT9V022 register address to 0x1A00 and then reads from 0x1A04
+ */
+dc1394error_t FFMVCCD::readMicronReg(unsigned int offset, unsigned int *val)
 {
-        FlyCapture2::Error error;
-
-        error = m_cam.WriteRegister(0x1A00, offset);
-        if (error != FlyCapture2::PGRERROR_OK) {
-                return error;
+        dc1394error_t err;
+        err = dc1394_set_control_register(dcam, 0x1A00, offset);
+        if (err != DC1394_SUCCESS) {
+            return err;
         }
 
-        error = m_cam.ReadRegister(0x1A04, val);
-        if (error != FlyCapture2::PGRERROR_OK) {
-                return error;
+        err = dc1394_get_control_register(dcam, 0x1A04, val);
+        if (err != DC1394_SUCCESS) {
+            return err;
         }
 
-        return error;
+        return DC1394_SUCCESS;
 }
+
 void ISInit()
 {
     static int isInit =0;
@@ -212,13 +202,25 @@ bool FFMVCCD::Connect()
         max_exposure = max;
     }
 
+    /* Set absolute gain to max */
+    err = dc1394_feature_set_absolute_control(dcam, DC1394_FEATURE_GAIN, DC1394_ON);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Failed to enable ansolute gain control.");
+    } 
+    err = dc1394_feature_get_absolute_boundaries(dcam, DC1394_FEATURE_GAIN, &min, &max);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Could not get max gain value");
+    } else {
+        err = dc1394_feature_set_absolute_value(dcam, DC1394_FEATURE_GAIN, max);
+        if (err != DC1394_SUCCESS) {
+            IDMessage(getDeviceName(), "Could not set max gain value");
+        }
+    }
+
     err=dc1394_capture_setup(dcam,10, DC1394_CAPTURE_FLAGS_DEFAULT);
 
     //Vref signal boost
     //error = writeMicronReg(0x2C, 0x00);
-
-    //Digital gain boost
-    //error = m_cam.WriteRegister(0x820, 0x7F);
 
     //2X gain boost
     //error = writeMicronReg(0x80, 0xF8);
@@ -260,6 +262,11 @@ bool FFMVCCD::initProperties()
     // Add Debug, Simulator, and Configuration controls
     addAuxControls();
 
+    /* Add Gain Vref switch */
+    IUFillSwitch(&GainS[0], "GAINVREF", "Vref Boost", ISS_OFF);
+    IUFillSwitch(&GainS[1], "GAIN2X", "2x Digital Boost", ISS_OFF);
+    IUFillSwitchVector(&GainSP, GainS, 2, getDeviceName(), "GAIN", "Gain", IMAGE_SETTINGS_TAB, IP_WO, ISR_NOFMANY, 0, IPS_IDLE);
+
     return true;
 
 }
@@ -290,9 +297,23 @@ bool FFMVCCD::updateProperties()
 
         // Start the timer
         SetTimer(POLLMS);
+        defineSwitch(&GainSP);
+    } else {
+        deleteProperty(GainSP.name);
     }
 
     return true;
+}
+
+bool FFMVCCD::UpdateCCDBin(int binx, int biny)
+{
+        if (binx != 1 || biny !=1)
+        {
+                DEBUG(INDI::Logger::DBG_ERROR, "Camera currently does not support binning.");
+                return false;
+        }
+
+        return true;
 }
 
 /**************************************************************************************
@@ -366,6 +387,19 @@ bool FFMVCCD::StartExposure(float duration)
         }
     }
 
+    /* Flush the DMA buffer */
+    while (1) {
+       err=dc1394_capture_dequeue(dcam, DC1394_CAPTURE_POLICY_POLL, &frame);
+       if (err != DC1394_SUCCESS) {
+            IDMessage(getDeviceName(), "Flushing DMA buffer failed!");
+            break;
+       }
+       if (!frame) {
+           break;
+       }
+       dc1394_capture_enqueue(dcam, frame);
+    }
+
     /*-----------------------------------------------------------------------
      *  have the camera start sending us data
      *-----------------------------------------------------------------------*/
@@ -421,6 +455,86 @@ bool FFMVCCD::ISNewNumber(const char *dev, const char *name, double values[], ch
     // If we didn't process anything above, let the parent handle it.
     return INDI::CCD::ISNewNumber(dev,name,values,names,n);
 }
+
+
+/**
+ * Set the digital gain in the MT9V022.
+ * Sets the tiled digital gain to 2x what the default is.
+ */
+dc1394error_t FFMVCCD::setDigitalGain(ISState state)
+{
+    dc1394error_t err;
+    unsigned int val;
+
+    if (state == ISS_OFF) {
+        err = writeMicronReg(0x80, 0xF4);
+        err = readMicronReg(0x80, &val);
+        if (err == DC1394_SUCCESS) { 
+            IDMessage(getDeviceName(), "Turned off digital gain boost. Tiled Digital Gain = 0x%x", val);
+        } else {
+            IDMessage(getDeviceName(), "readMicronReg failed!");
+        }
+    } else {
+        err = writeMicronReg(0x80, 0xF8);
+        err = readMicronReg(0x80, &val);
+        if (err == DC1394_SUCCESS) { 
+            IDMessage(getDeviceName(), "Turned on digital gain boost. Tiled Digital Gain = 0x%x", val);
+        } else {
+            IDMessage(getDeviceName(), "readMicronReg failed!");
+        }
+    }
+    return DC1394_SUCCESS;
+}
+
+/**
+ * Set the ADC reference voltage for the MT9V022.
+ * Decreasing the reference voltage will, in effect, increase the gain.
+ * The default Vref_ADC is 1.4V (4). We will bump it down to 1.0V (0).
+ */
+dc1394error_t FFMVCCD::setGainVref(ISState state)
+{
+    dc1394error_t err;
+    unsigned int val;
+
+    if (state == ISS_OFF) {
+        err = writeMicronReg(0x2C, 4);
+        err = readMicronReg(0x2C, &val);
+        if (err == DC1394_SUCCESS) { 
+            IDMessage(getDeviceName(), "Turned off Gain boost. VREF_ADC = 0x%x", val);
+        } else {
+            IDMessage(getDeviceName(), "readMicronReg failed!");
+        }
+    } else {
+        err = writeMicronReg(0x2C, 0);
+        err = readMicronReg(0x2C, &val);
+        if (err == DC1394_SUCCESS) { 
+            IDMessage(getDeviceName(), "Turned on Gain boost. VREF_ADC = 0x%x", val);
+        } else {
+            IDMessage(getDeviceName(), "readMicronReg failed!");
+        }
+    }
+    return DC1394_SUCCESS;
+}
+
+bool FFMVCCD::ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n)
+{
+    if (strcmp(dev, getDeviceName()) == 0) {
+        /* Reset */
+        if (!strcmp(name, GainSP.name)) {
+            if (IUUpdateSwitch(&GainSP, states, names, n) < 0) {
+                return false;
+            }
+            setGainVref(GainS[0].s);
+            setDigitalGain(GainS[1].s);
+            return true;
+        }
+
+    }
+
+    //  Nobody has claimed this, so, ignore it
+    return INDI::CCD::ISNewSwitch(dev, name, states, names, n);
+}
+
 
 /**************************************************************************************
 ** INDI is asking us to add any FITS keywords to the FITS header
@@ -484,6 +598,7 @@ void FFMVCCD::grabImage()
    uint32_t uheight, uwidth;
    int sub;
    uint16_t val;
+   struct timeval start, end;
 
    // Let's get a pointer to the frame buffer
    char * image = PrimaryCCD.getFrameBuffer();
@@ -498,9 +613,9 @@ void FFMVCCD::grabImage()
    /*-----------------------------------------------------------------------
     *  stop data transmission
     *-----------------------------------------------------------------------*/
-   err=dc1394_video_set_transmission(dcam,DC1394_OFF);
 
 
+   gettimeofday(&start, NULL);
    for (sub = 0; sub < sub_count; ++sub) {
        IDMessage(getDeviceName(), "Getting sub %d of %d", sub, sub_count);
        err=dc1394_capture_dequeue(dcam, DC1394_CAPTURE_POLICY_WAIT, &frame);
@@ -524,7 +639,10 @@ void FFMVCCD::grabImage()
 
        dc1394_capture_enqueue(dcam, frame);
    }
+   err=dc1394_video_set_transmission(dcam,DC1394_OFF);
    IDMessage(getDeviceName(), "Download complete.");
+   gettimeofday(&end, NULL);
+   IDMessage(getDeviceName(), "Download took %d uS", (int) ((end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec)));
 
    // Let INDI::CCD know we're done filling the image buffer
    ExposureComplete(&PrimaryCCD);

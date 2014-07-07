@@ -32,6 +32,8 @@ public:
     FFMVCCD();
 
     bool ISNewNumber (const char *dev, const char *name, double values[], char *names[], int n);
+    virtual bool ISNewSwitch(const char *dev, const char *name, ISState *states, char *names[], int n);
+
     void ISGetProperties(const char *dev);
 
 protected:
@@ -47,14 +49,18 @@ protected:
     bool AbortExposure();
     void TimerHit();
     void addFITSKeywords(fitsfile *fptr, CCDChip *targetChip);
+    bool UpdateCCDBin(int binx, int biny);
 
 private:
     // Utility functions
     float CalcTimeLeft();
     void  setupParams();
     void  grabImage();
-    FlyCapture2::Error writeMicronReg(unsigned int offset, unsigned int val);
-    FlyCapture2::Error readMicronReg(unsigned int offset, unsigned int *val);
+    dc1394error_t writeMicronReg(unsigned int offset, unsigned int val);
+    dc1394error_t readMicronReg(unsigned int offset, unsigned int *val);
+
+    dc1394error_t setGainVref(ISState iss);
+    dc1394error_t setDigitalGain(ISState state);
 
 
     // Are we exposing?
@@ -70,6 +76,8 @@ private:
     float last_exposure_length;
     int sub_count;
 
+    ISwitch GainS[2];
+    ISwitchVectorProperty GainSP;
     // We declare the CCD temperature property
     INumber TemperatureN[1];
     INumberVectorProperty TemperatureNP;
