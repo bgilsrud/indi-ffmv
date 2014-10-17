@@ -33,7 +33,7 @@ const int POLLMS = 250;
 std::auto_ptr<FFMVCCD> ffmvCCD(0);
 
 /**
- * FlyCapture doesn't provide an API to write to registers in the MT9V022 chip.
+ * Write to registers in the MT9V022 chip.
  * This can be done by programming the address in 0x1A00 and writing to 0x1A04.
  */
 dc1394error_t FFMVCCD::writeMicronReg(unsigned int offset, unsigned int val)

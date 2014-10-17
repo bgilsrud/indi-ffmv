@@ -6,7 +6,7 @@ Requirements
 ============
 * INDI
 * CFITSIO
-* FlyCapture
+* LIBDC1394
 
 
 Installation

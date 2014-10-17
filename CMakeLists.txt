@@ -7,7 +7,6 @@ set(RULES_INSTALL_DIR "/etc/udev/rules.d")
 
 find_package(CFITSIO REQUIRED)
 find_package(INDI REQUIRED)
-find_package(FLYCAPTURE REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(DC1394 REQUIRED)
 
@@ -17,7 +16,6 @@ include_directories( ${CMAKE_CURRENT_BINARY_DIR})
 include_directories( ${CMAKE_CURRENT_SOURCE_DIR})
 include_directories( ${INDI_INCLUDE_DIR})
 include_directories( ${CFITSIO_INCLUDE_DIR})
-include_directories( ${FLYCAPTURE_INCLUDE_DIR})
 include_directories( ${DC1394_INCLUDE_DIR})
 
 ########### QSI ###########
@@ -27,7 +25,7 @@ set(indiffmv_SRCS
 
 add_executable(indi_ffmv_ccd ${indiffmv_SRCS})
 
-target_link_libraries(indi_ffmv_ccd ${INDI_DRIVER_LIBRARIES} ${CFITSIO_LIBRARIES} ${FLYCAPTURE_LIBRARIES} ${DC1394_LIBRARIES} )
+target_link_libraries(indi_ffmv_ccd ${INDI_DRIVER_LIBRARIES} ${CFITSIO_LIBRARIES} ${DC1394_LIBRARIES} )
 
 install(TARGETS indi_ffmv_ccd RUNTIME DESTINATION bin )
 

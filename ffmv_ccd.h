@@ -21,7 +21,6 @@
 #define FFMVCCD_H
 
 #include <indiccd.h>
-#include <flycapture/FlyCapture2.h>
 #include <dc1394/dc1394.h>
 
 using namespace std;
@@ -81,8 +80,6 @@ private:
     // We declare the CCD temperature property
     INumber TemperatureN[1];
     INumberVectorProperty TemperatureNP;
-
-    FlyCapture2::Camera m_cam;
 
     dc1394_t *dc1394;
     dc1394camera_t *dcam;
