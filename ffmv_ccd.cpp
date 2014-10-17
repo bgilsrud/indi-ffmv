@@ -140,7 +140,7 @@ bool FFMVCCD::Connect()
     dc1394error_t err;
     bool supported;
     bool settings_valid;
-    unsigned int val;
+    uint32_t val;
     dc1394format7mode_t fm7;
     dc1394feature_info_t feature;
     float min, max;
@@ -165,6 +165,14 @@ bool FFMVCCD::Connect()
         return false;
     }
 
+    /* Reset camera */
+    err = dc1394_camera_reset(dcam);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Unable to reset camera!");
+        return false;
+    }
+
+    /* Set mode */
     err = dc1394_video_set_mode(dcam, DC1394_VIDEO_MODE_640x480_MONO16);
     if (err != DC1394_SUCCESS) {
         IDMessage(getDeviceName(), "Unable to connect to set videomode!");
@@ -191,9 +199,13 @@ bool FFMVCCD::Connect()
     }
 
     /* Get the longest possible exposure length */
+    err = dc1394_feature_set_mode(dcam, DC1394_FEATURE_SHUTTER, DC1394_FEATURE_MODE_MANUAL);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Failed to enable manual shutter control.");
+    } 
     err = dc1394_feature_set_absolute_control(dcam, DC1394_FEATURE_SHUTTER, DC1394_ON);
     if (err != DC1394_SUCCESS) {
-        IDMessage(getDeviceName(), "Failed to enable ansolute shutter control.");
+        IDMessage(getDeviceName(), "Failed to enable absolute shutter control.");
     } 
     err = dc1394_feature_get_absolute_boundaries(dcam, DC1394_FEATURE_SHUTTER, &min, &max);
     if (err != DC1394_SUCCESS) {
@@ -202,6 +214,16 @@ bool FFMVCCD::Connect()
         max_exposure = max;
     }
 
+    /* Set gain to max. By setting the register directly, we can achieve a
+     * gain of 24 dB...compared to a gain of 12 dB which is reported as the
+     * max
+     */
+    err = dc1394_set_control_register(dcam, 0x820, 0x40);
+    //err = dc1394_set_control_register(dcam, 0x820, 0x7f);
+    if (err != DC1394_SUCCESS) {
+            return err;
+    }
+#if 0
     /* Set absolute gain to max */
     err = dc1394_feature_set_absolute_control(dcam, DC1394_FEATURE_GAIN, DC1394_ON);
     if (err != DC1394_SUCCESS) {
@@ -216,15 +238,41 @@ bool FFMVCCD::Connect()
             IDMessage(getDeviceName(), "Could not set max gain value");
         }
     }
+#endif
+
+    /* Set brightness */
+    err = dc1394_feature_set_mode(dcam, DC1394_FEATURE_BRIGHTNESS, DC1394_FEATURE_MODE_MANUAL);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Failed to enable manual brightness control.");
+    } 
+    err = dc1394_feature_set_absolute_control(dcam, DC1394_FEATURE_BRIGHTNESS, DC1394_ON);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Failed to enable ansolute brightness control.");
+    } 
+    err = dc1394_feature_set_absolute_value(dcam, DC1394_FEATURE_BRIGHTNESS, 1);
+    if (err != DC1394_SUCCESS) {
+            IDMessage(getDeviceName(), "Could not set max brightness value");
+    }
+
+    /* Turn gamma control off */
+    err = dc1394_feature_set_absolute_value(dcam, DC1394_FEATURE_GAMMA, 1);
+    if (err != DC1394_SUCCESS) {
+            IDMessage(getDeviceName(), "Could not set gamma value");
+    }
+    err = dc1394_feature_set_power(dcam, DC1394_FEATURE_GAMMA, DC1394_OFF);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Unable to disable gamma!");
+        return false;
+    }
+
+    /* Turn off white balance */
+    err = dc1394_feature_set_power(dcam, DC1394_FEATURE_WHITE_BALANCE, DC1394_OFF);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Unable to disable white balance!");
+        return false;
+    }
 
     err=dc1394_capture_setup(dcam,10, DC1394_CAPTURE_FLAGS_DEFAULT);
-
-    //Vref signal boost
-    //error = writeMicronReg(0x2C, 0x00);
-
-    //2X gain boost
-    //error = writeMicronReg(0x80, 0xF8);
-
 
     return true;
 }
@@ -345,6 +393,7 @@ bool FFMVCCD::StartExposure(float duration)
     float gain = 1.0;
     uint32_t uwidth, uheight;
     float sub_length;
+    float fval;
 
     ms = duration* 1000;
 
@@ -381,10 +430,22 @@ bool FFMVCCD::StartExposure(float duration)
         IDMessage(getDeviceName(), "Triggering a %f second exposure using %d subs of %f seconds",
                 duration, sub_count, sub_length);
         /* Set sub length */
+        #if 0
+    err = dc1394_feature_set_absolute_control(dcam, DC1394_FEATURE_SHUTTER, DC1394_ON);
+    if (err != DC1394_SUCCESS) {
+        IDMessage(getDeviceName(), "Failed to enable ansolute shutter control.");
+    } 
+    #endif
         err = dc1394_feature_set_absolute_value(dcam, DC1394_FEATURE_SHUTTER, sub_length);
         if (err != DC1394_SUCCESS) {
             IDMessage(getDeviceName(), "Unable to set shutter value.");
         }
+        err = dc1394_feature_get_absolute_value(dcam, DC1394_FEATURE_SHUTTER, &fval);
+        if (err != DC1394_SUCCESS) {
+            IDMessage(getDeviceName(), "Unable to get shutter value.");
+        }
+        IDMessage(getDeviceName(), "Shutter value is %f.", fval);
+
     }
 
     /* Flush the DMA buffer */
@@ -553,34 +614,31 @@ void FFMVCCD::TimerHit()
 {
     long timeleft;
 
-    if(isConnected() == false)
+    if(isConnected() == false) {
         return;  //  No need to reset timer if we are not connected anymore
+    }
 
-    if (InExposure)
-    {
+    if (InExposure) {
         timeleft=CalcTimeLeft();
 
         // Less than a 0.1 second away from exposure completion
         // This is an over simplified timing method, check CCDSimulator and ffmvCCD for better timing checks
-        if(timeleft < 0.1)
-        {
-          /* We're done exposing */
-           IDMessage(getDeviceName(), "Exposure done, downloading image...");
+        if (timeleft < 0.1) {
+            /* We're done exposing */
+            IDMessage(getDeviceName(), "Exposure done, downloading image...");
 
-          // Set exposure left to zero
-          PrimaryCCD.setExposureLeft(0);
+            // Set exposure left to zero
+            PrimaryCCD.setExposureLeft(0);
 
-          // We're no longer exposing...
-          InExposure = false;
+            // We're no longer exposing...
+            InExposure = false;
 
-          /* grab and save image */
-          grabImage();
-
+            /* grab and save image */
+            grabImage();
+        } else {
+            // Just update time left in client
+            PrimaryCCD.setExposureLeft(timeleft);
         }
-        else
-         // Just update time left in client
-         PrimaryCCD.setExposureLeft(timeleft);
-
     }
 
     SetTimer(POLLMS);
@@ -620,20 +678,24 @@ void FFMVCCD::grabImage()
        IDMessage(getDeviceName(), "Getting sub %d of %d", sub, sub_count);
        err=dc1394_capture_dequeue(dcam, DC1394_CAPTURE_POLICY_WAIT, &frame);
        if (err != DC1394_SUCCESS) {
-               IDMessage(getDeviceName(), "Could not capture frame");
+              IDMessage(getDeviceName(), "Could not capture frame");
        }
        dc1394_get_image_size_from_video_mode(dcam,DC1394_VIDEO_MODE_640x480_MONO16, &uwidth, &uheight);
 
+       if (DC1394_TRUE == dc1394_capture_is_frame_corrupt(dcam, frame)) {
+              IDMessage(getDeviceName(), "Corrupt frame!");
+              continue;
+       }
        // Fill buffer with random pattern
        for (int i=0; i < height ; i++) {
            for (int j=0; j < width; j++) {
+               /* Detect unsigned overflow */
                val = ((uint16_t *) image)[i*width+j] + ntohs(((uint16_t*) (frame->image))[i*width+j]);
                if (val > ((uint16_t *) image)[i*width+j]) {
                    ((uint16_t *) image)[i*width+j] = val;
                } else {
                    ((uint16_t *) image)[i*width+j] = 0xFFFF;
                }
-               //image[i*width+j] += frame->image[i*width+j];
            }
        }
 
